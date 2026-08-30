@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net8.0 gives us [UnmanagedCallersOnly] + hostfxr function pointers. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>ManagedBridge</AssemblyName>
+    <RootNamespace>ManagedBridge</RootNamespace>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+
+    <!-- Needed for the unsafe pointer walk in Utf8ToString. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- Emits ManagedBridge.runtimeconfig.json next to the DLL. hostfxr needs
+         it to pick the runtime. This is why we don't hand-write that file. -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+  </PropertyGroup>
+
+  <!-- The dispatcher loads the fixed DLL purely by reflection at runtime, so we
+       do NOT reference it at compile time. Just make sure ThirdParty.dll ends up
+       in the same output folder (the demo copies it; see README). -->
+
+</Project>

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Sample stand-in for your fixed third-party DLL. Replace with your own. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <AssemblyName>ThirdParty</AssemblyName>
+    <RootNamespace>ThirdParty</RootNamespace>
+  </PropertyGroup>
+
+</Project>
