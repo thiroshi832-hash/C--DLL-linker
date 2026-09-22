@@ -9,7 +9,8 @@ set_target_properties(qtclrbridge PROPERTIES
     PREFIX ""            # produce qtclrbridge.dll, not libqtclrbridge.dll
 )
 
-# nethost/hostfxr are loaded at runtime via LoadLibrary — nothing to link.
+# mscoree.dll is loaded at runtime via LoadLibrary and the CLR hosting COM
+# interfaces are invoked through hand-declared vtables — nothing to link.
 # kernel32 (LoadLibraryW/GetProcAddress) is linked implicitly on Windows.
 
 install(TARGETS qtclrbridge RUNTIME DESTINATION bin)

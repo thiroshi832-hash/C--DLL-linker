@@ -1,19 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- net8.0 gives us [UnmanagedCallersOnly] + hostfxr function pointers. -->
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- net48 is the newest .NET Framework and the newest CLR that installs on
+         Windows 7 SP1. .NET (Core) 6/7/8 require Windows 10+, so they are ruled
+         out for a Win 7 target; net48 is the ceiling. -->
+    <TargetFramework>net48</TargetFramework>
     <AssemblyName>ManagedBridge</AssemblyName>
     <RootNamespace>ManagedBridge</RootNamespace>
-    <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>disable</Nullable>
 
-    <!-- Needed for the unsafe pointer walk in Utf8ToString. -->
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-
-    <!-- Emits ManagedBridge.runtimeconfig.json next to the DLL. hostfxr needs
-         it to pick the runtime. This is why we don't hand-write that file. -->
-    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <!-- The runtime is booted by the native host via mscoree.dll COM hosting,
+         so there is no runtimeconfig.json and no EnableDynamicLoading here. -->
   </PropertyGroup>
 
   <!-- The dispatcher loads the fixed DLL purely by reflection at runtime, so we

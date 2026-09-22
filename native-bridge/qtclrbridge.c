@@ -1,17 +1,26 @@
 // ---------------------------------------------------------------------------
-// qtclrbridge — native C bridge implementation (MinGW/GCC friendly, x64).
+// qtclrbridge — native C bridge implementation (MinGW/GCC friendly).
 //
-// It boots the .NET runtime and reaches the ManagedBridge dispatcher entirely
-// through runtime dynamic loading:
+// It boots the .NET *Framework* 4.x runtime (the newest CLR available on
+// Windows 7 SP1) and reaches the ManagedBridge dispatcher entirely through
+// runtime dynamic loading of mscoree.dll:
 //
-//     nethost.dll ── get_hostfxr_path() ──► hostfxr.dll
-//         hostfxr_initialize_for_runtime_config()
-//         hostfxr_get_runtime_delegate(load_assembly_and_get_function_pointer)
-//         → one function pointer per [UnmanagedCallersOnly] method
+//     mscoree.dll ── CLRCreateInstance() ──► ICLRMetaHost
+//         ICLRMetaHost::GetRuntime("v4.0.30319")   ──► ICLRRuntimeInfo
+//         ICLRRuntimeInfo::GetInterface(CLRRuntimeHost) ──► ICLRRuntimeHost
+//         ICLRRuntimeHost::Start()
+//         ICLRRuntimeHost::ExecuteInDefaultAppDomain(Bridge.Bootstrap, &registrar)
+//
+// ExecuteInDefaultAppDomain can only call `static int Method(string)`, so we use
+// that one call to hand the managed side the address of native_register() below.
+// Bootstrap then calls native_register() once per dispatcher method, giving us a
+// raw cdecl function pointer for each. No [UnmanagedCallersOnly] (which does not
+// exist in .NET Framework) and no export-by-name lookup are involved.
 //
 // No import libraries and no .NET SDK headers are needed to compile this: the
-// few hosting typedefs we use are declared inline below. You only need the
-// .NET 8 runtime installed at run time.
+// COM hosting interfaces we use are declared inline below. At run time you only
+// need the .NET Framework 4.8 runtime, which ships with / installs on Win 7 SP1
+// and provides mscoree.dll.
 // ---------------------------------------------------------------------------
 
 #define QTCLRBRIDGE_BUILD
@@ -21,49 +30,88 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 // ---------------------------------------------------------------------------
-// Minimal inline copies of the hostfxr / coreclr_delegates contracts.
-// (Normally from nethost.h / hostfxr.h / coreclr_delegates.h in the SDK.)
+// Minimal inline copies of the mscoree / metahost COM contracts.
+// (Normally from mscoree.h / metahost.h in the Windows SDK.) Only the methods
+// we actually call are typed; earlier vtable slots are kept as void* so the
+// layout/offsets stay correct.
 // ---------------------------------------------------------------------------
-typedef wchar_t char_t; // On Windows the host APIs use UTF-16 wide chars.
 
-// nethost: get_hostfxr_path
-struct get_hostfxr_parameters {
-    size_t size;
-    const char_t *assembly_path;
-    const char_t *dotnet_root;
-};
-typedef int (__cdecl *get_hostfxr_path_fn)(
-    char_t *buffer, size_t *buffer_size,
-    const struct get_hostfxr_parameters *parameters);
+static const GUID CLSID_CLRMetaHost =
+    {0x9280188D,0x0E8E,0x4867,{0xB3,0x0C,0x7F,0xA8,0x38,0x84,0xE8,0xDE}};
+static const GUID IID_ICLRMetaHost =
+    {0xD332DB9E,0xB9B3,0x4125,{0x82,0x07,0xA1,0x48,0x84,0xF5,0x32,0x16}};
+static const GUID IID_ICLRRuntimeInfo =
+    {0xBD39D1D2,0xBA2F,0x486A,{0x89,0xB0,0xB4,0xB0,0xCB,0x46,0x68,0x91}};
+static const GUID CLSID_CLRRuntimeHost =
+    {0x90F1A06E,0x7712,0x4762,{0x86,0xB5,0x7A,0x5E,0xBA,0x6B,0xDB,0x02}};
+static const GUID IID_ICLRRuntimeHost =
+    {0x90F1A06C,0x7712,0x4762,{0x86,0xB5,0x7A,0x5E,0xBA,0x6B,0xDB,0x02}};
 
-// hostfxr handles/functions
-typedef void *hostfxr_handle;
-typedef int (__cdecl *hostfxr_initialize_for_runtime_config_fn)(
-    const char_t *runtime_config_path, void *parameters, hostfxr_handle *host_context_handle);
-typedef int (__cdecl *hostfxr_get_runtime_delegate_fn)(
-    hostfxr_handle host_context_handle, int type, void **delegate);
-typedef int (__cdecl *hostfxr_close_fn)(hostfxr_handle host_context_handle);
+typedef struct ICLRMetaHost    ICLRMetaHost;
+typedef struct ICLRRuntimeInfo ICLRRuntimeInfo;
+typedef struct ICLRRuntimeHost ICLRRuntimeHost;
 
-// enum hostfxr_delegate_type -> load_assembly_and_get_function_pointer == 5
-#define HDT_LOAD_ASSEMBLY_AND_GET_FUNCTION_POINTER 5
+// ICLRMetaHost: we need GetRuntime (vtable slot 3).
+typedef struct ICLRMetaHostVtbl {
+    HRESULT (__stdcall *QueryInterface)(ICLRMetaHost*, const GUID*, void**);
+    ULONG   (__stdcall *AddRef)(ICLRMetaHost*);
+    ULONG   (__stdcall *Release)(ICLRMetaHost*);
+    HRESULT (__stdcall *GetRuntime)(ICLRMetaHost*, LPCWSTR, const GUID*, void**);
+    void *GetVersionFromFile;
+    void *EnumerateInstalledRuntimes;
+    void *EnumerateLoadedRuntimes;
+    void *RequestRuntimeLoadedNotification;
+    void *QueryLegacyV2RuntimeBinding;
+    void *ExitProcess;
+} ICLRMetaHostVtbl;
+struct ICLRMetaHost { ICLRMetaHostVtbl *lpVtbl; };
 
-// coreclr_delegates: load_assembly_and_get_function_pointer
-typedef int (__cdecl *load_assembly_and_get_function_pointer_fn)(
-    const char_t *assembly_path,
-    const char_t *type_name,
-    const char_t *method_name,
-    const char_t *delegate_type_name, // pass UNMANAGEDCALLERSONLY_METHOD
-    void *reserved,
-    void **delegate);
+// ICLRRuntimeInfo: we need GetInterface (vtable slot 9).
+typedef struct ICLRRuntimeInfoVtbl {
+    HRESULT (__stdcall *QueryInterface)(ICLRRuntimeInfo*, const GUID*, void**);
+    ULONG   (__stdcall *AddRef)(ICLRRuntimeInfo*);
+    ULONG   (__stdcall *Release)(ICLRRuntimeInfo*);
+    void *GetVersionString;
+    void *GetRuntimeDirectory;
+    void *IsLoaded;
+    void *LoadErrorString;
+    void *LoadLibrarySlot;    // real name LoadLibrary; renamed to dodge the Win32 macro
+    void *GetProcAddressSlot; // real name GetProcAddress; renamed for symmetry
+    HRESULT (__stdcall *GetInterface)(ICLRRuntimeInfo*, const GUID*, const GUID*, void**);
+    void *IsLoadable;
+    void *SetDefaultStartupFlags;
+    void *GetDefaultStartupFlags;
+    void *BindAsLegacyV2Runtime;
+    void *IsStarted;
+} ICLRRuntimeInfoVtbl;
+struct ICLRRuntimeInfo { ICLRRuntimeInfoVtbl *lpVtbl; };
 
-// Sentinel telling the host the target is an [UnmanagedCallersOnly] method
-// with a custom signature (rather than the default component entry point).
-#define UNMANAGEDCALLERSONLY_METHOD ((const char_t *)-1)
+// ICLRRuntimeHost: we need Start (slot 3) and ExecuteInDefaultAppDomain (slot 11).
+typedef struct ICLRRuntimeHostVtbl {
+    HRESULT (__stdcall *QueryInterface)(ICLRRuntimeHost*, const GUID*, void**);
+    ULONG   (__stdcall *AddRef)(ICLRRuntimeHost*);
+    ULONG   (__stdcall *Release)(ICLRRuntimeHost*);
+    HRESULT (__stdcall *Start)(ICLRRuntimeHost*);
+    void *Stop;
+    void *SetHostControl;
+    void *GetCLRControl;
+    void *UnloadAppDomain;
+    void *ExecuteInAppDomain;
+    void *GetCurrentAppDomainId;
+    void *ExecuteApplication;
+    HRESULT (__stdcall *ExecuteInDefaultAppDomain)(
+        ICLRRuntimeHost*, LPCWSTR pwzAssemblyPath, LPCWSTR pwzTypeName,
+        LPCWSTR pwzMethodName, LPCWSTR pwzArgument, DWORD *pReturnValue);
+} ICLRRuntimeHostVtbl;
+struct ICLRRuntimeHost { ICLRRuntimeHostVtbl *lpVtbl; };
+
+typedef HRESULT (__stdcall *CLRCreateInstance_fn)(const GUID*, const GUID*, void**);
 
 // ---------------------------------------------------------------------------
-// Managed method signatures (must match Bridge.cs exactly).
+// Managed method signatures (must match the delegate types in Bridge.cs).
 // ---------------------------------------------------------------------------
 typedef int   (__cdecl *managed_initialize_fn)(const char *assemblyPathUtf8);
 typedef int   (__cdecl *managed_add_fn)(int a, int b);
@@ -71,11 +119,17 @@ typedef void *(__cdecl *managed_greet_fn)(const char *nameUtf8);   // returns ch
 typedef void  (__cdecl *managed_free_fn)(void *p);
 typedef void *(__cdecl *managed_last_error_fn)(void);              // returns char*
 
+// Slot ids shared with Bridge.cs (keep in sync with the SLOT_* consts there).
+#define SLOT_INITIALIZE    0
+#define SLOT_ADD           1
+#define SLOT_GREET         2
+#define SLOT_FREESTRING    3
+#define SLOT_GETLASTERROR  4
+
 // ---------------------------------------------------------------------------
 // Bridge state.
 // ---------------------------------------------------------------------------
-static hostfxr_close_fn      g_hostfxr_close = NULL;
-static hostfxr_handle        g_ctx = NULL;
+static ICLRRuntimeHost      *g_host = NULL;      // kept alive for the process
 
 static managed_initialize_fn g_initialize = NULL;
 static managed_add_fn        g_add        = NULL;
@@ -83,27 +137,34 @@ static managed_greet_fn      g_greet      = NULL;
 static managed_free_fn       g_free       = NULL;
 static managed_last_error_fn g_last_error = NULL;
 
-static wchar_t g_bridge_type[]   = L"ManagedBridge.Bridge, ManagedBridge";
-static wchar_t g_managed_dll[MAX_PATH]     = {0};
-static char    g_native_error[512]         = {0};
+static wchar_t g_managed_dll[MAX_PATH] = {0};
+static char    g_native_error[512]     = {0};
 
 static void set_err(const char *msg) {
     strncpy(g_native_error, msg, sizeof(g_native_error) - 1);
     g_native_error[sizeof(g_native_error) - 1] = '\0';
 }
 
-// Resolve one [UnmanagedCallersOnly] method into a function pointer.
-static int bind(load_assembly_and_get_function_pointer_fn load_fn,
-                const wchar_t *method, void **out) {
-    int rc = load_fn(g_managed_dll, g_bridge_type, method,
-                     UNMANAGEDCALLERSONLY_METHOD, NULL, out);
-    if (rc != 0 || *out == NULL) {
-        char buf[256];
-        snprintf(buf, sizeof(buf), "Failed to bind managed method (hr=0x%x)", (unsigned)rc);
-        set_err(buf);
-        return -1;
+static void set_err_hr(const char *msg, HRESULT hr) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s (hr=0x%08lx)", msg, (unsigned long)hr);
+    set_err(buf);
+}
+
+// ---------------------------------------------------------------------------
+// native_register — called BY managed code (Bootstrap) to hand us one cdecl
+// function pointer per dispatcher method. Its address is passed to Bootstrap as
+// a decimal string; managed marshals it back to a delegate and invokes it.
+// ---------------------------------------------------------------------------
+static void __cdecl native_register(int slot, void *fn) {
+    switch (slot) {
+        case SLOT_INITIALIZE:   g_initialize = (managed_initialize_fn)fn; break;
+        case SLOT_ADD:          g_add        = (managed_add_fn)fn;        break;
+        case SLOT_GREET:        g_greet      = (managed_greet_fn)fn;      break;
+        case SLOT_FREESTRING:   g_free       = (managed_free_fn)fn;       break;
+        case SLOT_GETLASTERROR: g_last_error = (managed_last_error_fn)fn; break;
+        default: break;
     }
-    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,58 +173,69 @@ static int bind(load_assembly_and_get_function_pointer_fn load_fn,
 QTCLR_API int qtclr_start(const wchar_t *managedBridgeDir) {
     if (g_initialize) return 0; // already started
 
-    // 1) Locate hostfxr via nethost.dll (shipped with the .NET runtime).
-    HMODULE nethost = LoadLibraryW(L"nethost.dll");
-    if (!nethost) { set_err("nethost.dll not found. Install the .NET 8 runtime."); return -1; }
+    // 1) mscoree.dll ships with the .NET Framework (present on Win 7 SP1).
+    HMODULE mscoree = LoadLibraryW(L"mscoree.dll");
+    if (!mscoree) { set_err("mscoree.dll not found. Install the .NET Framework 4.8 runtime."); return -1; }
 
-    get_hostfxr_path_fn get_hostfxr_path =
-        (get_hostfxr_path_fn)GetProcAddress(nethost, "get_hostfxr_path");
-    if (!get_hostfxr_path) { set_err("get_hostfxr_path missing in nethost.dll"); return -2; }
+    CLRCreateInstance_fn CLRCreateInstance =
+        (CLRCreateInstance_fn)GetProcAddress(mscoree, "CLRCreateInstance");
+    if (!CLRCreateInstance) { set_err("CLRCreateInstance missing in mscoree.dll"); return -2; }
 
-    wchar_t hostfxr_path[MAX_PATH];
-    size_t hostfxr_len = MAX_PATH;
-    if (get_hostfxr_path(hostfxr_path, &hostfxr_len, NULL) != 0) {
-        set_err("get_hostfxr_path failed"); return -3;
+    // 2) ICLRMetaHost.
+    ICLRMetaHost *metahost = NULL;
+    HRESULT hr = CLRCreateInstance(&CLSID_CLRMetaHost, &IID_ICLRMetaHost, (void **)&metahost);
+    if (FAILED(hr) || !metahost) { set_err_hr("CLRCreateInstance failed", hr); return -3; }
+
+    // 3) The v4 runtime (covers .NET Framework 4.0 .. 4.8).
+    ICLRRuntimeInfo *rtinfo = NULL;
+    hr = metahost->lpVtbl->GetRuntime(metahost, L"v4.0.30319", &IID_ICLRRuntimeInfo, (void **)&rtinfo);
+    if (FAILED(hr) || !rtinfo) {
+        set_err_hr("ICLRMetaHost::GetRuntime(v4.0.30319) failed", hr);
+        metahost->lpVtbl->Release(metahost);
+        return -4;
     }
 
-    // 2) Load hostfxr and resolve the entry points we need.
-    HMODULE hostfxr = LoadLibraryW(hostfxr_path);
-    if (!hostfxr) { set_err("Could not load hostfxr.dll"); return -4; }
-
-    hostfxr_initialize_for_runtime_config_fn init_fn =
-        (hostfxr_initialize_for_runtime_config_fn)GetProcAddress(hostfxr, "hostfxr_initialize_for_runtime_config");
-    hostfxr_get_runtime_delegate_fn get_delegate_fn =
-        (hostfxr_get_runtime_delegate_fn)GetProcAddress(hostfxr, "hostfxr_get_runtime_delegate");
-    g_hostfxr_close =
-        (hostfxr_close_fn)GetProcAddress(hostfxr, "hostfxr_close");
-    if (!init_fn || !get_delegate_fn || !g_hostfxr_close) {
-        set_err("hostfxr entry points missing"); return -5;
+    // 4) ICLRRuntimeHost.
+    ICLRRuntimeHost *host = NULL;
+    hr = rtinfo->lpVtbl->GetInterface(rtinfo, &CLSID_CLRRuntimeHost, &IID_ICLRRuntimeHost, (void **)&host);
+    if (FAILED(hr) || !host) {
+        set_err_hr("ICLRRuntimeInfo::GetInterface(CLRRuntimeHost) failed", hr);
+        rtinfo->lpVtbl->Release(rtinfo);
+        metahost->lpVtbl->Release(metahost);
+        return -5;
     }
 
-    // 3) Initialize the runtime from ManagedBridge.runtimeconfig.json.
-    wchar_t runtimeconfig[MAX_PATH];
-    _snwprintf(runtimeconfig, MAX_PATH, L"%s\\ManagedBridge.runtimeconfig.json", managedBridgeDir);
-    _snwprintf(g_managed_dll, MAX_PATH, L"%s\\ManagedBridge.dll", managedBridgeDir);
-
-    if (init_fn(runtimeconfig, NULL, &g_ctx) != 0 || g_ctx == NULL) {
-        set_err("hostfxr_initialize_for_runtime_config failed (bad runtimeconfig or missing runtime)");
+    // 5) Start the CLR.
+    hr = host->lpVtbl->Start(host);
+    if (FAILED(hr)) {
+        set_err_hr("ICLRRuntimeHost::Start failed", hr);
+        host->lpVtbl->Release(host);
+        rtinfo->lpVtbl->Release(rtinfo);
+        metahost->lpVtbl->Release(metahost);
         return -6;
     }
+    g_host = host; // keep the host alive; do NOT release it
 
-    // 4) Get the loader delegate.
-    load_assembly_and_get_function_pointer_fn load_fn = NULL;
-    if (get_delegate_fn(g_ctx, HDT_LOAD_ASSEMBLY_AND_GET_FUNCTION_POINTER, (void **)&load_fn) != 0
-        || load_fn == NULL) {
-        set_err("get_runtime_delegate failed"); return -7;
+    // 6) Call Bridge.Bootstrap, passing the address of native_register as text.
+    _snwprintf(g_managed_dll, MAX_PATH, L"%s\\ManagedBridge.dll", managedBridgeDir);
+
+    wchar_t arg[32];
+    _ui64tow((unsigned __int64)(uintptr_t)&native_register, arg, 10);
+
+    DWORD ret = 0;
+    hr = host->lpVtbl->ExecuteInDefaultAppDomain(host, g_managed_dll,
+             L"ManagedBridge.Bridge", L"Bootstrap", arg, &ret);
+
+    // The infos are no longer needed once Bootstrap has run.
+    rtinfo->lpVtbl->Release(rtinfo);
+    metahost->lpVtbl->Release(metahost);
+
+    if (FAILED(hr)) { set_err_hr("ExecuteInDefaultAppDomain(Bootstrap) failed (bad path or missing ManagedBridge.dll?)", hr); return -7; }
+    if (ret != 0)   { set_err("Managed Bootstrap returned failure"); return -8; }
+
+    if (!g_initialize || !g_add || !g_greet || !g_free || !g_last_error) {
+        set_err("Bootstrap did not register all methods"); return -9;
     }
-
-    // 5) Bind every managed export.
-    if (bind(load_fn, L"Initialize",   (void **)&g_initialize)) return -8;
-    if (bind(load_fn, L"Add",          (void **)&g_add))        return -9;
-    if (bind(load_fn, L"Greet",        (void **)&g_greet))      return -10;
-    if (bind(load_fn, L"FreeString",   (void **)&g_free))       return -11;
-    if (bind(load_fn, L"GetLastError", (void **)&g_last_error)) return -12;
-
     return 0;
 }
 

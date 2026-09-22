@@ -1,9 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Sample stand-in for your fixed third-party DLL. Replace with your own. -->
+  <!-- Sample stand-in for your fixed third-party DLL. Replace with your own.
+       Targets net48 so the whole demo runs on Windows 7 SP1. A real fixed DLL
+       that targets .NET Framework 4.x or .NET Standard 2.0 loads in this host;
+       a .NET Core/5+ DLL cannot run on Win 7 at all. -->
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <ImplicitUsings>disable</ImplicitUsings>
+    <TargetFramework>net48</TargetFramework>
     <Nullable>disable</Nullable>
     <AssemblyName>ThirdParty</AssemblyName>
     <RootNamespace>ThirdParty</RootNamespace>

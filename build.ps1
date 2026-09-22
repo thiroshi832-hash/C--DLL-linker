@@ -1,11 +1,19 @@
 # ===========================================================================
 # build.ps1 — build every piece and assemble a runnable ./dist folder.
 #
-# Prerequisites on PATH:
-#   * .NET SDK 8.x            (dotnet build)      -> https://dotnet.microsoft.com
+# Target runtime: Windows 7 SP1 -> .NET Framework 4.8 (newest CLR that runs
+# there). Build on a normal Win 10/11 dev box; run the ./dist output on Win 7.
+#
+# Prerequisites on PATH (build machine):
+#   * .NET SDK (any recent 6/7/8) WITH the .NET Framework 4.8 targeting pack,
+#     or the .NET Framework 4.8 Developer Pack + MSBuild (dotnet build net48)
+#                                                 -> https://dotnet.microsoft.com
 #   * CMake 3.16+             (cmake)
 #   * MinGW-w64 gcc           (gcc, mingw32-make) — the same kit your Qt uses
 #   * Qt 5/6 for MinGW        (Qt6::Core / Qt5::Core discoverable by CMake)
+#
+# On the Windows 7 SP1 target: the .NET Framework 4.8 runtime, plus the Qt and
+# MinGW runtime DLLs deployed next to the exe (see README).
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File build.ps1

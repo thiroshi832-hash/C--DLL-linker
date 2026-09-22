@@ -13,7 +13,7 @@ class ClrBridge
 {
 public:
     // bridgeDllPath   : path to qtclrbridge.dll
-    // managedBridgeDir: folder holding ManagedBridge.dll + its runtimeconfig.json
+    // managedBridgeDir: folder holding ManagedBridge.dll
     bool load(const QString &bridgeDllPath, const QString &managedBridgeDir);
 
     // Load your fixed C# DLL (path to ThirdParty.dll).

@@ -24,9 +24,8 @@ extern "C" {
 #  define QTCLR_API
 #endif
 
-// Boot the .NET runtime and load ManagedBridge.dll.
-//   managedBridgeDir : folder containing ManagedBridge.dll +
-//                      ManagedBridge.runtimeconfig.json (wide/UTF-16 path).
+// Boot the .NET Framework 4.x runtime and load ManagedBridge.dll.
+//   managedBridgeDir : folder containing ManagedBridge.dll (wide/UTF-16 path).
 // Returns 0 on success, negative on failure.
 QTCLR_API int qtclr_start(const wchar_t *managedBridgeDir);
 
